@@ -1,0 +1,342 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Shawn Anastasio</title>
+    <description>A little blog showcasing some of my projects and findings over the years.
+</description>
+    <link>https://anastas.io/</link>
+    <atom:link href="https://anastas.io/feed.xml" rel="self" type="application/rss+xml"/>
+    <pubDate>Mon, 08 Aug 2016 23:14:40 -0500</pubDate>
+    <lastBuildDate>Mon, 08 Aug 2016 23:14:40 -0500</lastBuildDate>
+    <generator>Jekyll v3.2.1</generator>
+    
+      <item>
+        <title>OSDEV: Implementing a basic x86 page frame allocator in C</title>
+        <description>&lt;p&gt;When writing an operating system for any architecture, one of the most important
+functions you’ll have to write is the page frame allocator. The page frame allocator allows the OS
+to divide the physical memory available on a system into chunks called page frames,
+which can then be used later to allocate memory to applications with a separate
+paging function.&lt;/p&gt;
+
+&lt;p&gt;There are many methods of page frame allocation, each with varying levels of
+complexity and efficiency. For an overview of many of these methods, see the
+&lt;a href=&quot;http://wiki.osdev.org/Page_Frame_Allocation&quot;&gt;OSDev Wiki&lt;/a&gt;. In this post we’ll be
+going over a much less efficient method than those outlined in the wiki for simplicity’s
+sake, but you can improve upon it later.&lt;/p&gt;
+
+&lt;p&gt;Unlike those outlined in the wiki, our page frame allocator isn’t actually going
+to be storing any data of its own. Instead, we’re going to piggyback off of
+the Multiboot information structure. If you’re following this tutorial, you
+hopefully already have a basic Multiboot kernel set up, as well as a basic
+understanding of the Multiboot specification (the PDF for which can be found
+&lt;a href=&quot;https://www.gnu.org/software/grub/manual/multiboot/multiboot.pdf&quot;&gt;here&lt;/a&gt;).&lt;/p&gt;
+
+&lt;p&gt;Without reading the entire specification, the rundown is that your Multiboot-compliant
+bootloader (probably GRUB) will provide you with an information structure that contains
+a lot data about the system you’re running on. Among this data is the Multiboot
+memory map, which provides a listing of all memory regions in the system, and
+which ones you’re allowed to write to (many regions are reserved for things like
+VGA video output).&lt;/p&gt;
+
+&lt;p&gt;To access this memory map, we must first pass a pointer to the information structure
+to our kernel’s entry point. Luckily, our bootloader will put this pointer in the
+&lt;code&gt;ebx&lt;/code&gt; register when we first boot up, so all we have to do is pass it as a parameter
+to our entrypoint in assembly. Along with &lt;code&gt;ebx&lt;/code&gt;, we’ll also pass &lt;code&gt;eax&lt;/code&gt; which contains
+a “magic value”, &lt;code&gt;0x2BADB002&lt;/code&gt;, which you can use to verify that the bootloader is
+in fact Multiboot-compliant.&lt;/p&gt;
+
+&lt;h2 id=&quot;getting-the-multiboot-information-structure&quot;&gt;Getting the Multiboot information structure&lt;/h2&gt;
+&lt;p&gt;Before we start, we have to make sure that we’ve declared to our bootloader
+that we want the memory map to be included in the information structure, as it is
+optional by default. If you’re using the boot assembly code from the
+&lt;a href=&quot;http://wiki.osdev.org/Bare_Bones&quot;&gt;OSDev Bare Bones&lt;/a&gt; tutorial, this is already done for you.
+The code to specify we want the memory map looks like this (at the top of your file):&lt;/p&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-nasm&quot; data-lang=&quot;nasm&quot;&gt;&lt;span class=&quot;no&quot;&gt;MEMINFO&lt;/span&gt;&lt;span class=&quot;kd&quot;&gt;     equ&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;&amp;lt;&amp;lt;&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;
+&lt;span class=&quot;c1&quot;&gt;; You can add more flags here separated by |&lt;/span&gt;
+&lt;span class=&quot;no&quot;&gt;FLAGS&lt;/span&gt;&lt;span class=&quot;kd&quot;&gt;       equ&lt;/span&gt; &lt;span class=&quot;nv&quot;&gt;MEMINFO&lt;/span&gt;
+&lt;span class=&quot;no&quot;&gt;MAGIC&lt;/span&gt;&lt;span class=&quot;kd&quot;&gt;       equ&lt;/span&gt; &lt;span class=&quot;mh&quot;&gt;0x1BADB002&lt;/span&gt;
+&lt;span class=&quot;no&quot;&gt;CHECKSUM&lt;/span&gt;&lt;span class=&quot;kd&quot;&gt;    equ&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;-&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nv&quot;&gt;MAGIC&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;nv&quot;&gt;FLAGS&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+
+&lt;span class=&quot;nf&quot;&gt;.section&lt;/span&gt; &lt;span class=&quot;nv&quot;&gt;multiboot&lt;/span&gt;
+&lt;span class=&quot;k&quot;&gt;align&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;4&lt;/span&gt;
+    &lt;span class=&quot;kd&quot;&gt;dd&lt;/span&gt; &lt;span class=&quot;nv&quot;&gt;MAGIC&lt;/span&gt;
+    &lt;span class=&quot;kd&quot;&gt;dd&lt;/span&gt; &lt;span class=&quot;nv&quot;&gt;FLAGS&lt;/span&gt;
+    &lt;span class=&quot;kd&quot;&gt;dd&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;CH&lt;/span&gt;&lt;span class=&quot;nv&quot;&gt;ECKSUM&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;p&gt;We’ll also have to make sure that the initial stack is at least 4096 bytes
+(the size of a single page). As with the previous step, if you’re using the
+OSDev Bare Bones code this is done already. I’ll be setting it to 16384 bytes,
+but anything greater than 4096 bytes should suffice.
+This change needs to be done in your &lt;code&gt;boot.asm&lt;/code&gt; or equivalent file.&lt;/p&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-nasm&quot; data-lang=&quot;nasm&quot;&gt;&lt;span class=&quot;k&quot;&gt;section&lt;/span&gt; &lt;span class=&quot;nv&quot;&gt;.bootstrap_stack&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;nv&quot;&gt;nobits&lt;/span&gt;
+&lt;span class=&quot;k&quot;&gt;align&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;4&lt;/span&gt;
+&lt;span class=&quot;nl&quot;&gt;stack_bottom:&lt;/span&gt;
+    &lt;span class=&quot;kd&quot;&gt;resb&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;16384&lt;/span&gt;
+&lt;span class=&quot;nl&quot;&gt;stack_top:&lt;/span&gt;
+
+&lt;span class=&quot;nf&quot;&gt;...&lt;/span&gt;
+
+&lt;span class=&quot;k&quot;&gt;section&lt;/span&gt; &lt;span class=&quot;nv&quot;&gt;.text&lt;/span&gt;
+&lt;span class=&quot;k&quot;&gt;global&lt;/span&gt; &lt;span class=&quot;nv&quot;&gt;_start&lt;/span&gt;
+&lt;span class=&quot;nl&quot;&gt;_start:&lt;/span&gt;
+    &lt;span class=&quot;c1&quot;&gt;; Use the stack we allocated above&lt;/span&gt;
+    &lt;span class=&quot;nf&quot;&gt;mov&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;esp&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;nv&quot;&gt;stack_top&lt;/span&gt;
+
+    &lt;span class=&quot;c1&quot;&gt;; Ensure stack is 16-bit aligned&lt;/span&gt;
+    &lt;span class=&quot;nf&quot;&gt;and&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;esp&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;-&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;16&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;p&gt;Now that our stack is big enough, we can pass the Multiboot information structure
+as well as the magic value to our kernel entrypoint. Remember that we must push the
+values in the reverse order that we want to use them:&lt;/p&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-nasm&quot; data-lang=&quot;nasm&quot;&gt;&lt;span class=&quot;k&quot;&gt;section&lt;/span&gt; &lt;span class=&quot;nv&quot;&gt;.text&lt;/span&gt;
+&lt;span class=&quot;k&quot;&gt;global&lt;/span&gt; &lt;span class=&quot;nv&quot;&gt;_start&lt;/span&gt;
+&lt;span class=&quot;nl&quot;&gt;_start:&lt;/span&gt;
+    &lt;span class=&quot;nf&quot;&gt;...&lt;/span&gt;
+    &lt;span class=&quot;c1&quot;&gt;; Push Multiboot information structure&lt;/span&gt;
+    &lt;span class=&quot;nf&quot;&gt;push&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;ebx&lt;/span&gt;
+
+    &lt;span class=&quot;c1&quot;&gt;; Push Multiboot magic value&lt;/span&gt;
+    &lt;span class=&quot;nf&quot;&gt;push&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;eax&lt;/span&gt;
+
+    &lt;span class=&quot;c1&quot;&gt;; Call our kernel entrypoint&lt;/span&gt;
+    &lt;span class=&quot;nf&quot;&gt;call&lt;/span&gt; &lt;span class=&quot;nv&quot;&gt;kernel_main&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;p&gt;Now we can access these values in our kernel’s C entrypoint, we just have to
+change its parameters:&lt;/p&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-c&quot; data-lang=&quot;c&quot;&gt;&lt;span class=&quot;kt&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;kernel_main&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;kt&quot;&gt;uint32_t&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;mboot_magic&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;mboot_header&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;
+    &lt;span class=&quot;p&quot;&gt;...&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;}&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;h2 id=&quot;defining-the-multiboot-information-structure&quot;&gt;Defining the Multiboot information structure&lt;/h2&gt;
+&lt;p&gt;To read the Multiboot information structure, we first need to declare a few
+&lt;code&gt;struct&lt;/code&gt;s in C that define its layout. Luckily the aforementioned
+&lt;a href=&quot;https://www.gnu.org/software/grub/manual/multiboot/multiboot.pdf&quot;&gt;Multiboot specification PDF&lt;/a&gt; has them written out for you on page 16.
+While it does declare more than we’ll need for this tutorial, it’s not a bad idea
+to include the whole file anyways as it may be useful in the future.&lt;/p&gt;
+
+&lt;p&gt;Once you have the structures and constants from the PDF included into your kernel,
+there’s one more thing we need to do before we can start parsing the information
+structure.&lt;/p&gt;
+
+&lt;h2 id=&quot;validating-the-multiboot-magic-value&quot;&gt;Validating the Multiboot magic value&lt;/h2&gt;
+&lt;p&gt;As stated before, the Multiboot magic value is simply a constant that all
+Multiboot-compliant bootloaders will provide to prove that they are compliant.
+Before we even attempt to read the Multiboot information structure, we should
+verify this value so that we don’t try to read garbage in the event that the kernel
+is not booted properly.&lt;/p&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-c&quot; data-lang=&quot;c&quot;&gt;&lt;span class=&quot;kt&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;kernel_main&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;kt&quot;&gt;uint32_t&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;mboot_magic&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;mboot_header&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;
+    &lt;span class=&quot;p&quot;&gt;...&lt;/span&gt;
+    &lt;span class=&quot;c1&quot;&gt;// MULTIBOOT_BOOTLOADER_MAGIC is defined on page 16 of the PDF too&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;mboot_magic&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;!=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;MULTIBOOT_BOOTLOADER_MAGIC&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// If the magic is wrong, we should probably halt the system.&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;printf&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&amp;quot;Error: We weren&amp;#39;t booted by a compliant bootloader!&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\n&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&amp;quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;);&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;panic&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;();&lt;/span&gt;
+    &lt;span class=&quot;p&quot;&gt;}&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;}&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;h2 id=&quot;preparing-to-read-the-multiboot-information-structure&quot;&gt;Preparing to read the Multiboot information structure&lt;/h2&gt;
+&lt;p&gt;Now that we’ve verified the magic value, we can read the Multiboot information structure
+and look for the memory map. As it’s possible the memory map wasn’t included
+(in the case of an incomplete bootloader or other error), it’s always good to
+check for its existence.&lt;/p&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-c&quot; data-lang=&quot;c&quot;&gt;&lt;span class=&quot;kt&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;kernel_main&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;kt&quot;&gt;uint32_t&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;mboot_magic&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;mboot_header&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;
+    &lt;span class=&quot;p&quot;&gt;...&lt;/span&gt;
+    &lt;span class=&quot;c1&quot;&gt;// First, cast the pointer to a multiboot_info_t struct pointer&lt;/span&gt;
+    &lt;span class=&quot;kt&quot;&gt;multiboot_info_t&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;*&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;mboot_hdr&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;kt&quot;&gt;multiboot_info__t&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;mboot_header&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+
+    &lt;span class=&quot;c1&quot;&gt;// The specification states that bit 6 signifies the presence of the memory map&lt;/span&gt;
+    &lt;span class=&quot;c1&quot;&gt;// We can check the header flags to see if it&amp;#39;s there&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;((&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;mboot_hdr&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;-&amp;gt;&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;flags&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;amp;&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;&amp;lt;&amp;lt;&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;6&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;))&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// The memory map is not present, we should probably halt the system&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;printf&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&amp;quot;Error: No Multiboot memory map was provided!&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\n&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&amp;quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;);&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;panic&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;();&lt;/span&gt;
+    &lt;span class=&quot;p&quot;&gt;}&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;}&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;p&gt;We’re almost there, but first, let’s set some global variables that will help us
+keep track of things and make our lives easier.&lt;/p&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-c&quot; data-lang=&quot;c&quot;&gt;&lt;span class=&quot;cm&quot;&gt;/**&lt;/span&gt;
+&lt;span class=&quot;cm&quot;&gt; * At the top of your file, we&amp;#39;ll make some global variables that will help us&lt;/span&gt;
+&lt;span class=&quot;cm&quot;&gt; * keep track of frames. I&amp;#39;ll explain what these do in a bit.&lt;/span&gt;
+&lt;span class=&quot;cm&quot;&gt; */&lt;/span&gt;
+&lt;span class=&quot;kt&quot;&gt;multiboot_info_t&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;verified_mboot_hdr&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kt&quot;&gt;uint32_t&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;mboot_reserved_start&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kt&quot;&gt;uint32_t&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;mboot_reserved_end&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kt&quot;&gt;uint32_t&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;next_free_frame&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+
+&lt;span class=&quot;kt&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;kernel_main&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;kt&quot;&gt;uint32_t&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;mboot_magic&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;mboot_header&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;
+    &lt;span class=&quot;p&quot;&gt;...&lt;/span&gt;
+    &lt;span class=&quot;cm&quot;&gt;/**&lt;/span&gt;
+&lt;span class=&quot;cm&quot;&gt;     * After we&amp;#39;ve verified the information structure, let&amp;#39;s update our&lt;/span&gt;
+&lt;span class=&quot;cm&quot;&gt;     * global variables.&lt;/span&gt;
+&lt;span class=&quot;cm&quot;&gt;     */&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;verified_mboot_hdr&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;mboot_hdr&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;mboot_reserved_start&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;kt&quot;&gt;uint32_t&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;mboot_hdr&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;mboot_reserved_end&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;kt&quot;&gt;uint32_t&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;mboot_hdr&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;sizeof&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;kt&quot;&gt;multiboot_info_t&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;));&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;next_free_frame&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;}&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;p&gt;As you can see, we’ve made quite a few variables. First, we’ve got a pointer,
+&lt;code&gt;verified_mboot_hdr&lt;/code&gt; where we can store our pointer to the information structure
+so other functions can access it easily. Next, we’ve got &lt;code&gt;mboot_reserved_start&lt;/code&gt;
+and &lt;code&gt;mboot_reserved_end&lt;/code&gt; which, surprisingly enough, store the start and end
+locations of the Multiboot information structure in memory so we don’t accidentally
+overwrite it later. Finally, we’ve got &lt;code&gt;next_free_frame&lt;/code&gt;, which stores the number
+of the next free frame. This will be explained in greater detail in a later section.&lt;/p&gt;
+
+&lt;h2 id=&quot;a-page-frame-allocator&quot;&gt;A page frame allocator&lt;/h2&gt;
+&lt;p&gt;We’ve gone through all the steps to verify and prepare to read the Multiboot
+information structure, but up until now you didn’t know why. As stated before,
+our page frame allocator is going to piggyback off of the Multiboot memory map
+to keep track of allocated frames. We’re going to do this by having a single
+counter that increases by one every time we allocate a 4096 chunk (frame) of free memory
+in the Multiboot memory map from start to end. This way, frame #1 is always the
+first 4096 bytes marked as free in the memory map, #2 is the second 4096 bytes,
+and so on. This is what the &lt;code&gt;next_free_frame&lt;/code&gt; variable in the previous section is
+for.&lt;/p&gt;
+
+&lt;p&gt;Before we can write the actual allocator, we need a method to read the memory map
+and retrieve memory addresses that correspond to frame numbers, and vice versa.
+For this we’re going to create a separate function that accesses those varibles
+we created earlier.&lt;/p&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-c&quot; data-lang=&quot;c&quot;&gt;&lt;span class=&quot;cp&quot;&gt;#define MMAP_GET_NUM 0&lt;/span&gt;
+&lt;span class=&quot;cp&quot;&gt;#define MMAP_GET_ADDR 1&lt;/span&gt;
+&lt;span class=&quot;cp&quot;&gt;#define PAGE_SIZE 4096&lt;/span&gt;
+
+&lt;span class=&quot;cm&quot;&gt;/**&lt;/span&gt;
+&lt;span class=&quot;cm&quot;&gt; * A function to iterate through the multiboot memory map.&lt;/span&gt;
+&lt;span class=&quot;cm&quot;&gt; * If `mode` is set to MMAP_GET_NUM, it will return the frame number for the&lt;/span&gt;
+&lt;span class=&quot;cm&quot;&gt; * frame at address `request`.&lt;/span&gt;
+&lt;span class=&quot;cm&quot;&gt; * If `mode` is set to MMAP_GET_ADDR, it will return the starting address for&lt;/span&gt;
+&lt;span class=&quot;cm&quot;&gt; * the frame number `request`.&lt;/span&gt;
+&lt;span class=&quot;cm&quot;&gt; */&lt;/span&gt;
+&lt;span class=&quot;kt&quot;&gt;uint32_t&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;mmap_read&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;kt&quot;&gt;uint32_t&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;request&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;uint8_t&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;mode&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;
+    &lt;span class=&quot;c1&quot;&gt;// We&amp;#39;re reserving frame number 0 for errors, so skip all requests for 0&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;request&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+
+    &lt;span class=&quot;c1&quot;&gt;// If the user specifies an invalid mode, also skip the request&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;mode&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;!=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;MMAP_GET_NUM&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;amp;&amp;amp;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;mode&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;!=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;MMAP_GET_ADDR&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+
+    &lt;span class=&quot;c1&quot;&gt;// Increment through each entry in the multiboot memory map&lt;/span&gt;
+    &lt;span class=&quot;kt&quot;&gt;uintptr_t&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;cur_mmap_addr&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;kt&quot;&gt;uintptr_t&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;verified_mboot_hdr&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;-&amp;gt;&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;mmap_addr&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+    &lt;span class=&quot;kt&quot;&gt;uintptr_t&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;mmap_end_addr&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;cur_mmap_addr&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;verified_mboot_hdr&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;-&amp;gt;&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;mmap_length&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+    &lt;span class=&quot;kt&quot;&gt;uint32_t&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;cur_num&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;while&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;cur_mmap_addr&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;lt;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;mmap_end_addr&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// Get a pointer to the current entry&lt;/span&gt;
+        &lt;span class=&quot;kt&quot;&gt;multiboot_memory_map_t&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;current_entry&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;
+                                        &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;kt&quot;&gt;multiboot_memory_map_t&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;cur_mmap_addr&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+
+        &lt;span class=&quot;c1&quot;&gt;// Now let&amp;#39;s split this entry into page sized chunks and increment our&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// internal frame number counter&lt;/span&gt;
+        &lt;span class=&quot;kt&quot;&gt;uint64_t&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+        &lt;span class=&quot;kt&quot;&gt;uint64_t&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;current_entry_end&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;current_entry&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;-&amp;gt;&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;addr&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;current_entry&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;-&amp;gt;&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;len&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;current_entry&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;-&amp;gt;&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;addr&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;PAGE_SIZE&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;lt;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;current_entry_end&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;PAGE_SIZE&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;mode&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;MMAP_GET_NUM&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;amp;&amp;amp;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;request&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;amp;&amp;amp;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;request&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;lt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;PAGE_SIZE&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;
+                &lt;span class=&quot;c1&quot;&gt;// If we&amp;#39;re looking for a frame number from an address and we found it&lt;/span&gt;
+                &lt;span class=&quot;c1&quot;&gt;// return the frame number&lt;/span&gt;
+                &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;cur_num&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;+&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+            &lt;span class=&quot;p&quot;&gt;}&lt;/span&gt;
+
+            &lt;span class=&quot;c1&quot;&gt;// If the requested chunk is in reserved space, skip it&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;current_entry&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;-&amp;gt;&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;type&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;MULTIBOOT_MEMORY_RESERVED&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;
+                &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;mode&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;MMAP_GET_ADDR&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;amp;&amp;amp;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;cur_num&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;request&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;
+                    &lt;span class=&quot;c1&quot;&gt;// The address of a chunk in reserved space was requested&lt;/span&gt;
+                    &lt;span class=&quot;c1&quot;&gt;// Increment the request until it is no longer reserved&lt;/span&gt;
+                    &lt;span class=&quot;o&quot;&gt;++&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;request&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+                &lt;span class=&quot;p&quot;&gt;}&lt;/span&gt;
+                &lt;span class=&quot;c1&quot;&gt;// Skip to the next chunk until it&amp;#39;s no longer reserved&lt;/span&gt;
+                &lt;span class=&quot;o&quot;&gt;++&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;cur_num&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+                &lt;span class=&quot;k&quot;&gt;continue&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+            &lt;span class=&quot;p&quot;&gt;}&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;else&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;mode&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;MMAP_GET_ADDR&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;amp;&amp;amp;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;cur_num&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;request&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;
+                &lt;span class=&quot;c1&quot;&gt;// If we&amp;#39;re looking for a frame starting address and we found it&lt;/span&gt;
+                &lt;span class=&quot;c1&quot;&gt;// return the starting address&lt;/span&gt;
+                &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+            &lt;span class=&quot;p&quot;&gt;}&lt;/span&gt;
+            &lt;span class=&quot;o&quot;&gt;++&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;cur_num&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+        &lt;span class=&quot;p&quot;&gt;}&lt;/span&gt;
+
+        &lt;span class=&quot;c1&quot;&gt;// Increment by the size of the current entry to get to the next one&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;cur_mmap_addr&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;current_entry&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;-&amp;gt;&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;size&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;sizeof&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;kt&quot;&gt;uintptr_t&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;);&lt;/span&gt;
+    &lt;span class=&quot;p&quot;&gt;}&lt;/span&gt;
+    &lt;span class=&quot;c1&quot;&gt;// If no results are found, return 0&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;}&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;p&gt;While this code looks daunting, the basic concept behind it is quite simple.
+It essentially does the following:&lt;/p&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;Read each entry in the memory map&lt;/li&gt;
+  &lt;li&gt;Split each entry into frame-sized chunks (4096 bytes)&lt;/li&gt;
+  &lt;li&gt;Iterate through each chunk until a valid address is found for the given frame number
+or a frame number is found for the given address.&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;Now that we can read the memory map, creating an allocator can be done quite
+simply:&lt;/p&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-c&quot; data-lang=&quot;c&quot;&gt;&lt;span class=&quot;cm&quot;&gt;/**&lt;/span&gt;
+&lt;span class=&quot;cm&quot;&gt; * Allocate the next free frame and return it&amp;#39;s frame number&lt;/span&gt;
+&lt;span class=&quot;cm&quot;&gt; */&lt;/span&gt;
+&lt;span class=&quot;kt&quot;&gt;uint32_t&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;allocate_frame&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;
+    &lt;span class=&quot;c1&quot;&gt;// Get the address for the next free frame&lt;/span&gt;
+    &lt;span class=&quot;kt&quot;&gt;uint32_t&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;cur_addr&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;mmap_read&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;next_free_frame&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;MMAP_GET_ADDR&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;);&lt;/span&gt;
+
+    &lt;span class=&quot;c1&quot;&gt;// Verify that the frame is not in the multiboot reserved area&lt;/span&gt;
+    &lt;span class=&quot;c1&quot;&gt;// If it is, increment the next free frame number and recursively call back.&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;addr&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;multiboot_reserved_start&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;amp;&amp;amp;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;addr&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;lt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;multiboot_reserved_end&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;++&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;next_free_frame&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;allocate_frame&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;();&lt;/span&gt;
+    &lt;span class=&quot;p&quot;&gt;}&lt;/span&gt;
+
+    &lt;span class=&quot;c1&quot;&gt;// Call mmap_read again to get the frame number for our address&lt;/span&gt;
+    &lt;span class=&quot;kt&quot;&gt;uint32_t&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;cur_num&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;mmap_read&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;cur_addr&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;MMAP_GET_NUM&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;);&lt;/span&gt;
+
+    &lt;span class=&quot;c1&quot;&gt;// Update next_free_frame to the next unallocated frame number&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;next_free_frame&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;cur_num&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+
+    &lt;span class=&quot;c1&quot;&gt;// Finally, return the newly allocated frame num&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;cur_num&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;}&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;p&gt;Now, to allocate a page frame you simply have to call&lt;/p&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-c&quot; data-lang=&quot;c&quot;&gt;&lt;span class=&quot;kt&quot;&gt;uint32_t&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;new_frame&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;allocate_frame&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;();&lt;/span&gt;
+&lt;span class=&quot;kt&quot;&gt;uint32_t&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;new_frame_addr&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;mmap_read&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;new_frame&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;MMAP_GET_ADDR&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;);&lt;/span&gt;
+&lt;span class=&quot;n&quot;&gt;printf&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&amp;quot;New frame allocated at: 0x%x&lt;/span&gt;&lt;span class=&quot;se&quot;&gt;\n&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&amp;quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;new_frame_addr&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;);&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;h2 id=&quot;conclusion&quot;&gt;Conclusion&lt;/h2&gt;
+&lt;p&gt;Congratulations! You now have a working (albeit primitive) method of page frame
+allocation for your operating system. It cannot yet free frames, but it provides
+a good starting point for developing a paging system. In the future, I may write
+another post improving upon this allocator with freeing implemented, as well as
+some performance enhancements.&lt;/p&gt;
+
+&lt;h2 id=&quot;resources&quot;&gt;Resources&lt;/h2&gt;
+&lt;p&gt;If you get stuck anywhere, I recommend taking a peek at my example OS
+&lt;a href=&quot;https://github.com/shawnanastasio/ShawnOS&quot;&gt;ShawnOS&lt;/a&gt;, as well as the plethora
+of online resources related to OS development, such as the
+&lt;a href=&quot;http://wiki.osdev.org/&quot;&gt;OSDev Wiki&lt;/a&gt;.&lt;/p&gt;
+
+</description>
+        <pubDate>Mon, 08 Aug 2016 16:42:10 -0500</pubDate>
+        <link>https://anastas.io/osdev/memory/2016/08/08/page-frame-allocator.html</link>
+        <guid isPermaLink="true">https://anastas.io/osdev/memory/2016/08/08/page-frame-allocator.html</guid>
+        
+        
+        <category>osdev</category>
+        
+        <category>memory</category>
+        
+      </item>
+    
+  </channel>
+</rss>
