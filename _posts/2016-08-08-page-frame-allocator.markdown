@@ -148,7 +148,7 @@ check for its existence.
 void kernel_main(uint32_t mboot_magic, void *mboot_header) {
     ...
     // First, cast the pointer to a multiboot_info_t struct pointer
-    multiboot_info_t * mboot_hdr = (multiboot_info__t *)mboot_header;
+    multiboot_info_t * mboot_hdr = (multiboot_info_t *)mboot_header;
 
     // The specification states that bit 6 signifies the presence of the memory map
     // We can check the header flags to see if it's there
