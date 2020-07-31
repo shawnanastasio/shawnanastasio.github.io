@@ -11,7 +11,7 @@ distribution on their Xaviers, which comes with a laughably ancient 4.9 kernel b
 This means users will miss out on new features, upstream driver additions, and security fixes from the upstream Linux
 kernel project.
 
-Thankfully though, support Xavier SoC and a lot of its peripherals are present in recent Linux releases, so running
+Thankfully though, support for the Xavier SoC and a lot of its peripherals are present in recent Linux releases, so running
 a mainline kernel is possible (though NVIDIA's documentation certainly won't tell you how). Below we'll walk through
 the process of compiling a kernel from mainline sources and booting it on the Xavier.
 
