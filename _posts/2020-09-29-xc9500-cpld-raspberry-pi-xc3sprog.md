@@ -1,7 +1,7 @@
 ---
 layout: post
 title:  "Programming a Xilinx XC9500XL CPLD with a Raspberry Pi and xc3sprog"
-date:   2020-08-29 12:00:00 -0500
+date:   2020-09-29 12:00:00 -0500
 categories: hardware
 ---
 I recently got a [breakout board for the XC9572XL CPLD](http://dangerousprototypes.com/docs/XC9500XL_CPLD_breakout_board)
