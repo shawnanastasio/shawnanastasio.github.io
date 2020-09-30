@@ -7,7 +7,7 @@ categories: hardware
 I recently got a [breakout board for the XC9572XL CPLD](http://dangerousprototypes.com/docs/XC9500XL_CPLD_breakout_board)
 from Dangerous Prototypes to play around with, which was particularly interesting to me because of its 5v tolerant I/O banks.
 Soon after it arrived, though, I realized I didn't have an ISE-compatible Xilinx JTAG adapter to program it, but
-thankfully, a number of open source solutions exist that allow you to program the device without forking over
+thankfully a number of open source solutions exist that allow you to program the device without forking over
 [$270](https://www.mouser.com/ProductDetail/Xilinx/HW-USB-II-G?qs=rrS6PyfT74cTrO3YL49xhw%3D%3D) to Xilinx for what is
 essentially a Cypress FX2 microcontroller in a red box.
 
