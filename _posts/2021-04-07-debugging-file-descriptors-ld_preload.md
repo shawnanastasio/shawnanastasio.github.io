@@ -111,7 +111,7 @@ used to grab the function pointer to the real `close()`.
 $ gcc -shared -fPIC -ldl hook_close.c -o hook_close.so
 ```
 
-We can now use LD_PRELOAD to run our application with the hook installed and then gdb to it:
+We can now use LD_PRELOAD to run our application with the hook installed and then attach gdb to it:
 ```
 $ LD_PRELOAD=$PWD/hook_close.so ./my_application &
 $ gdb -p $(pgrep my_application)
