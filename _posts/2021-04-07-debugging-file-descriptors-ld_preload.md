@@ -58,7 +58,7 @@ can discover the location of the bug rather trivially by intercepting all `close
 checking for a parameter of fd 1.
 
 First, we create a new C file that defines a function in the global namespace with the same name and signature
-as the function we want to hook. In our case, that signature is `int open(int fd)`. Then we simply need to
+as the function we want to hook. In our case, that signature is `int close(int fd)`. Then we simply need to
 inspect the argument and perform some action if it's equal to 1, and forward it to the actual `close()` function
 in libc otherwise.
 
